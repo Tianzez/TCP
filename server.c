@@ -1,143 +1,166 @@
 #include "comm.h"
 
-typedef struct sockfd_list{
-	int fd;
-	response res;
-	struct sockfd_list* _prev;
-	struct sockfd_list* _next;
-}sockfd_list;
+typedef struct sockfd_node{
+    int fd;
+    struct sockfd_node* _prev;
+    struct sockfd_node* _next;
+}sockfd_node;
 
-// 管理连接的客户端的信息
-sockfd_list* head = NULL;
+sockfd_node* phead = NULL;
 
-// 线程执行函数
-void* threadwork(void* arg)
+sockfd_node* buy_node(int client_fd)
 {
-	sockfd_list* Node  = (sockfd_list*)arg;
+    sockfd_node* new_node = (sockfd_node*)malloc(sizeof(sockfd_node));
+    assert(new_node != NULL);
 
-	char buf[1024];
-	while(1){
-		// 读取客户端发来的消息
-		int s = recv(Node->fd, buf, sizeof(buf), 0);
-		if(s == 0){
-			// 客户端断开连接，把该客户端的套接字信息从链表中删除
-			printf("client disconnect...\n");
-			Node->_prev->_next = Node->_next;
-			Node->_next->_prev = Node->_prev;
-			free(Node);
-			break;
-		}
-		else if(s < 0){
-			break;
-		}
-
-		buf[s] = '\0';
-		printf("client [%s] [%d] : #%s\n", Node->res.ip, Node->res.port, buf);
-		strcpy(Node->res.msg, buf);
-
-		sockfd_list* cur = head->_next;
-		while(cur != head){
-			if(cur != Node){
-				send(cur->fd, &(Node->res), sizeof(response), 0);
-			}
-			cur = cur->_next;
-		}
-	}
+    new_node->fd = client_fd;
+    new_node->_prev = NULL;
+    new_node->_next = NULL;
+    return new_node;
 }
 
-
-sockfd_list* BuyNode(int fd, char* ip, int port)
+void push_back(sockfd_node* new_node)
 {
-	sockfd_list* tmp = malloc(sizeof(sockfd_list));
-	memset(tmp, 0, sizeof(sockfd_list));
-	if(tmp == NULL){
-		perror("malloc");
-		exit(1);
-	}
-	tmp->fd = fd;
-	strcpy(tmp->res.ip, ip);
-	tmp->res.port = port;
-	tmp->_prev = NULL;
-	tmp->_next = NULL;
-	return tmp;
+    if(phead->_next == NULL){
+        phead->_next = new_node;
+        phead->_prev = new_node;
+        new_node->_next = phead;
+        new_node->_prev = phead;
+    }else{
+        new_node->_prev = phead->_prev;
+        new_node->_next = phead;
+        phead->_prev->_next = new_node;
+        phead->_prev = new_node;
+    }
 }
 
-
-int main(int argc, char *argv[])
+// 删除节点
+void erase(sockfd_node* del)
 {
-	if(argc != 3){
-		printf("Usage ./server [ip] [port]\n");
-		return 1;
-	}
+    del->_prev->_next = del->_next;
+    del->_next->_prev = del->_prev;
+    free(del);
+}
 
-	head = BuyNode(0, "head", 0);
-	// 参数1:IPV4协议  参数2:面向字节流
-	int sock = socket(AF_INET, SOCK_STREAM, 0);
-	if(sock < 0){
-		perror("socket");
-		return 2;
-	}
-	// 服务器
-	struct sockaddr_in server_socket;
+// 接收到 Ctrl+C 产生的 信息后，执行此函数
+void handler(int n)
+{
+    sockfd_node* cur = phead->_next;
+    while(cur != phead){
+        sockfd_node* next = cur->_next;
+        free(cur);
+        cur = next;
+    }
+    free(phead);
+    printf("服务器退出\n");
+    exit(0);
+}
 
-	// 把服务器的IP地址和端口号填充到对应套接字结构体中
-	server_socket.sin_family = AF_INET;
-	server_socket.sin_addr.s_addr = inet_addr(argv[1]);
-	server_socket.sin_port = htons(atoi(argv[2]));
+void* thread_work(void* attr)
+{
+    sockfd_node* cur = (sockfd_node*)attr;
 
-	int ret = bind(sock, (struct sockaddr*)&server_socket, sizeof(server_socket));
-	// 如果端口号已经被其他进程占有了，就会绑定失败
-	if(ret < 0){
-		perror("bind");
-		close(sock);
-		return 3;
-	}
+    // 储存客户端发来的消息以及客户端的姓名
+    Msg msg;
+    memset(&msg, 0, sizeof(msg));
 
-	if(listen(sock, 5) < 0){
-		perror("listen");
-		close(sock);
-		return 4;
-	}
+    for(;;){
+        // 读取客户端信息
+        int read_size = recv(cur->fd, &msg, sizeof(msg), 0);
+        // 读到的字节个数为0，代表客户端断开连接
+        if(read_size == 0){
+            printf("< < < < < %s 已下线 < < < < <\n", msg.name);
+            erase(cur);
+            break;
+        }else{
+            if(read_size < 0){
+                perror("recv");
+                break;
+            }
+        }
 
-	printf("bind and listen success, wait accept...\n");
+        printf("%s say : %s\n", msg.name, msg.data);
 
-	for(;;)
-	{
-		// 连接的客户端
-		struct sockaddr_in client_socket;
-		socklen_t len = sizeof(client_socket);
+        // 把收到消息给所有用户发送
+        sockfd_node* p = phead->_next;
+        while(p != phead){
+            if(p != cur){
+                send(p->fd, &msg, sizeof(msg), 0);
+            }
+            p = p->_next;
+        }
+    }
+}
 
-		// 链接客服端
-		int client_sock = accept(sock, (struct sockaddr*)&client_socket, &len);
-		if(client_sock < 0){
-			printf("accept error\n");
-			continue;
-		}
-		char* ip = inet_ntoa(client_socket.sin_addr);
-		int port = ntohs(client_socket.sin_port);
-		printf("get accept, ip is : %s, port is : %d\n", ip, port);
+void server_work(int argc, char* argv[])
+{
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if(server_fd < 0){
+        perror("socket");
+    }
 
-		sockfd_list* NewNode = BuyNode(client_sock, ip, port);
-		if(head->_next == NULL){
-			head->_next = NewNode;
-			head->_prev = NewNode;
-			NewNode->_prev = head;
-			NewNode->_next = head;
-		} else {
-			NewNode->_next = head;
-			NewNode->_prev = head->_prev->_next; 
-			head->_prev->_next = NewNode;
-			head->_prev = NewNode;
-		}
+    // 允许创建多个端口号相同的套接字
+    // 解决：如果服务器主动断开连接会进入 TIME_WAIT 状态的问题
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-		pthread_t tid = 0;
-		pthread_create(&tid, NULL, threadwork, (void*)NewNode);
-		
-		//这里不能用pthread_join()来回收线程，
-		//因为这个函数是阻塞式的，如果主线程没有回收到指定线程，那他就会一直阻塞，
-		//这样就没法处理其他客户端请求。
-		pthread_detach(tid);
-	}
-	close(sock);
-	return 0;
+    struct sockaddr_in server_socket;
+    server_socket.sin_family = AF_INET;
+    server_socket.sin_addr.s_addr = inet_addr(argv[1]);
+    server_socket.sin_port = htons(atoi(argv[2]));
+
+    int ret = bind(server_fd, (struct sockaddr*)&server_socket, sizeof(server_socket));
+    if(ret < 0){
+        perror("bind()");
+        close(server_fd);
+    }
+
+    if(listen(server_fd, 5) < 0){
+        perror("listen");
+        close(server_fd);
+    }
+
+
+    printf("bind and listen success, wait accept...\n");
+
+    for(;;){
+        struct sockaddr_in client_socket;
+        socklen_t len = sizeof(client_socket);
+        
+        // 与客户端建立连接
+        int client_fd = accept(server_fd, (struct sockaddr*)&client_socket, &len);
+        if(client_fd < 0){
+            continue;
+        }
+        char* ip = inet_ntoa(client_socket.sin_addr);
+        int port = ntohs(client_socket.sin_port);
+        printf("get accept, ip : %s, port : %d\n", ip, port);
+        
+        // 把连接的客户端的信息存放在链表里，统一管理
+        sockfd_node* new_node = buy_node(client_fd);
+        push_back(new_node);
+
+        pthread_t tid = 0;
+        pthread_create(&tid, NULL, thread_work, (void*)new_node);
+
+        // 把线程设置成分离状态，使其结束后被操作系统自动回收（不会阻塞主线程）
+        pthread_detach(tid);
+    }
+    close(server_fd);
+}
+
+int main(int argc, char* argv[])
+{
+    daemon(0, 0);
+    phead = buy_node(0);
+    if(argc != 3){
+        printf("Usage ./server [ip] [port]\n");
+        return 1;
+    }
+
+    // 当按下 Ctrl+C 时，先销毁链表释放空间，然后服务器退出
+    signal(SIGINT, handler);
+    server_work(argc, argv);
+
+    return 0;
 }
