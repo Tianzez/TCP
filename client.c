@@ -1,54 +1,57 @@
 #include "comm.h"
 
-int main(int argc, char *argv[])
+
+int client_work(int argc, char* argv[])
 {
-	if(argc != 3){
-		printf("Usage ./client [ip] [port]\n");
-		return 1;
-	}
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if(server_fd < 0){
+        perror("socket");
+        return 2;
+    }
 
-	int sock = socket(AF_INET, SOCK_STREAM, 0);
-	if(sock < 0){
-		perror("socket");
-		return 2;
-	}
+    struct sockaddr_in server_socket;
+    //struct sockaddr_in client_socket;
+    server_socket.sin_family = AF_INET;
+    server_socket.sin_addr.s_addr = inet_addr(argv[1]);
+    server_socket.sin_port = htons(atoi(argv[2]));
 
-	struct sockaddr_in server_socket;
-	struct sockaddr_in client_socket;
+    int ret = connect(server_fd, (struct sockaddr*)&server_socket, sizeof(server_socket));
+    if(ret < 0){
+        perror("connect");
+        return 3;
+    }
 
-	server_socket.sin_family = AF_INET;
-	server_socket.sin_addr.s_addr = inet_addr(argv[1]);
-	server_socket.sin_port = htons(atoi(argv[2]));
+    printf("%s connect success...\n", argv[3]);
 
-	int ret = connect(sock, (struct sockaddr*)&server_socket, sizeof(server_socket));
-	if(ret < 0){
-		perror("connect");
-		return 3;
-	}
+    if(fcntl(0, F_SETFL, FNDELAY) < 0){
+        perror("fcntl");
+        return 4;
+    }
 
-	printf("connect success...\n");
-	char buf[1024];
+    Msg msg;
+    for(;;){
+        memset(&msg, 0, sizeof(msg));
+        strcpy(msg.name, argv[3]);
+        int read_size = read(0, msg.data, sizeof(msg.data));
+        if(read_size > 0){
+            msg.data[read_size-1] = '\0';
+            send(server_fd, &msg, sizeof(msg), MSG_DONTWAIT);
+        }
 
-	if(fcntl(0, F_SETFL, FNDELAY) < 0){
-		perror("fcntl");
-		return 4;
-	}
+        int recv_size = recv(server_fd, &msg, sizeof(msg), MSG_DONTWAIT);
+        if(recv_size > 0){
+            printf("\t\t%s say : %s\n", msg.name, msg.data);
+        }
+    }
+}
 
-	response* res = malloc(sizeof(response));
-	for(;;)
-	{
-		//printf("Please Enter: ");
-		int s = read(0, buf, sizeof(buf)-1);
-		if(s > 0){
-			buf[s-1] = 0;
-			send(sock, buf, strlen(buf), MSG_DONTWAIT);
-		}
-		int _s = recv(sock, res, sizeof(response), MSG_DONTWAIT);
-		if(_s > 0){
-			buf[_s] = 0;
-			fflush(stdout);
-			printf("\t\t[%s] [%d] say: %s\n", res->ip, res->port, res->msg);
-		} 
-	}
-	return 0;
+int main(int argc, char* argv[])
+{
+    if(argc != 4){
+        printf("Usage ./server [ip] [port] [name]\n");
+        return 1;
+    }
+    client_work(argc, argv);
+
+    return 0;
 }
